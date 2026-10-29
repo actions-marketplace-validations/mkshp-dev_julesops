@@ -1,6 +1,18 @@
-# JulesOps Server
+# JulesOps Server (experimental)
 
-The JulesOps hosted control-plane backend. Supports both a local JSON-file demo mode
+> **Status: parked.** This is an unmaintained prototype. It isn't part of JulesOps releases, isn't deployed anywhere, and isn't needed to use the JulesOps action, which keeps all state in GitHub labels. Use it for experiments only.
+>
+> Known issues:
+> - Every issue in an installed repository becomes a job, including issues that aren't Jules tasks; an issue without a status label counts as queued.
+> - When a pull request links an issue, the job's title is replaced with "Linked PR #N".
+> - "Stale Reviews" counts every issue in review, not only stale ones.
+> - Retries aren't recorded, so every job shows attempt 1 and the attempt history is empty.
+> - Only the default `status:*` label names are recognized; custom names from `julesops.yml` are ignored.
+> - Any comment containing `/retry` or `/requeue` marks a job queued, with no check of the author.
+> - The dashboard is unstyled at `/dashboard` without a trailing slash (use `/dashboard/`), and it stays on "Connecting…" if its icon script from unpkg.com fails to load.
+> - The dashboard is read-only; it has no retry or requeue actions.
+
+A GitHub App webhook receiver with a cross-repository dashboard, job history, alerts, and admin tools. Supports both a local JSON-file demo mode
 (no database required) and a full Postgres-backed production deployment.
 
 ## API surface
@@ -9,7 +21,6 @@ The JulesOps hosted control-plane backend. Supports both a local JSON-file demo 
 - `GET /health` — service health, storage mode, uptime
 - `GET /health/db` — database connectivity
 - `GET /health/github` — GitHub App credential presence
-- `GET /health/stripe` — Stripe credential presence
 - `GET /metrics` — Prometheus-format metrics
 
 ### Jobs & events
@@ -28,11 +39,6 @@ The JulesOps hosted control-plane backend. Supports both a local JSON-file demo 
 - `GET /auth/logout` — destroy session
 - `GET /api/me` — current authenticated user
 
-### Billing
-- `POST /billing/checkout` — create Stripe Checkout session
-- `POST /billing/webhook` — handle Stripe events
-- `GET /billing/portal` — redirect to Stripe Customer Portal
-
 ### Admin
 - `GET /admin/installations/:installation_id` — installation overview, repositories, jobs, and failed events
 - `GET /admin/installations/:installation_id/repositories` — repository inspection
@@ -44,34 +50,36 @@ The JulesOps hosted control-plane backend. Supports both a local JSON-file demo 
 
 No database required — data is stored in `server/data/store.json`.
 
-```powershell
+```bash
 cd server
 npm install
-$env:GITHUB_WEBHOOK_SECRET="dev-secret"
+export GITHUB_WEBHOOK_SECRET="dev-secret"
 npm start
 ```
 
+Demo mode runs **without login** (unless `NODE_ENV=production` or `DATABASE_URL` is set) and binds to `127.0.0.1`. Don't expose it publicly.
+
 ## Run smoke tests
 
-```powershell
+```bash
 cd server
-$env:JULESOPS_SERVER_URL="http://127.0.0.1:3000"
-$env:GITHUB_WEBHOOK_SECRET="dev-secret"
+export JULESOPS_SERVER_URL="http://127.0.0.1:3000"
+export GITHUB_WEBHOOK_SECRET="dev-secret"
 npm run smoke
 ```
 
 ## Run unit tests
 
-```powershell
+```bash
 cd server
 node --test src/__tests__/*.test.js
 ```
 
 ## Run database migrations
 
-```powershell
+```bash
 cd server
-$env:DATABASE_URL="postgres://user:pass@host/dbname"
+export DATABASE_URL="postgres://user:pass@host/dbname"
 npm run migrate
 ```
 
@@ -87,13 +95,12 @@ Key variables:
 | `HOST` | `127.0.0.1` | HTTP host |
 | `DATABASE_URL` | *(unset)* | Postgres URL — if absent, JSON-file demo mode |
 | `GITHUB_APP_ID` | *(unset)* | GitHub App numeric ID |
-| `GITHUB_WEBHOOK_SECRET` | *(unset)* | Webhook signature verification secret |
+| `GITHUB_WEBHOOK_SECRET` | *(unset)* | Webhook signature verification secret. Unset: webhooks are rejected in production, accepted unverified in local demo mode. |
 | `GITHUB_PRIVATE_KEY` | *(unset)* | PEM private key (newlines as `\n`) |
 | `GITHUB_OAUTH_CLIENT_ID` | *(unset)* | GitHub OAuth App client ID |
 | `GITHUB_OAUTH_CLIENT_SECRET` | *(unset)* | GitHub OAuth App client secret |
 | `SESSION_SECRET` | *(unset)* | Session signing secret |
-| `STRIPE_SECRET_KEY` | *(unset)* | Stripe secret key |
-| `STRIPE_WEBHOOK_SECRET` | *(unset)* | Stripe webhook signing secret |
+| `CORS_ORIGIN` | *(unset)* | Origin allowed to call the API cross-site. Unset: no CORS headers. |
 | `SENDGRID_API_KEY` | *(unset)* | SendGrid API key for alert email delivery |
 | `ALERT_EMAIL_FROM` | *(unset)* | Verified sender address for alert emails |
 | `ALERT_EMAIL_FROM_NAME` | `JulesOps` | Sender display name for alert emails |
@@ -103,5 +110,7 @@ Key variables:
 
 ## Deployment
 
-See [`docs/deployment.md`](../docs/deployment.md) for step-by-step production deployment
-instructions (Render, Railway, Fly.io, Neon Postgres).
+1. Create a GitHub App (webhook URL `https://<your-host>/api/webhooks`, a webhook secret, and a private key) with read access to metadata and contents and read & write access to issues and pull requests. Subscribe it to `issues`, `pull_request`, `issue_comment`, `installation`, and `installation_repositories`.
+2. Provision Postgres and run `npm run migrate` with `DATABASE_URL` set. Migrations are tracked in a `_migrations` table, so re-running is safe.
+3. Set `NODE_ENV=production`, `HOST=0.0.0.0` (in containers), `APP_BASE_URL`, `SESSION_SECRET`, the GitHub App variables above (or `GITHUB_PRIVATE_KEY_PATH` for a key file), and `PGSSLMODE=require` for TLS-only databases. See `.env.example` at the repository root for every variable.
+4. Start with `npm start` and check `GET /health` and `GET /health/db`.

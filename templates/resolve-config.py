@@ -1,6 +1,9 @@
 import os
+import sys
 
-CONFIG_PATH = ".github/julesops.yml"
+DEFAULT_CONFIG_PATH = ".github/julesops.yml"
+# GitHub login(s) Jules authors commits and posts comments as (comma-separated).
+DEFAULT_JULES_AUTHORS = "google-labs-jules[bot]"
 
 
 def parse_scalar(raw_value):
@@ -91,17 +94,20 @@ def as_bool_text(value, default):
 
 
 def main():
-    if not os.path.exists(CONFIG_PATH):
-        print(f"Missing config file at: {CONFIG_PATH}")
-        raise SystemExit(1)
-
-    raw = parse_simple_yaml(CONFIG_PATH)
-    cfg = raw.get("julesops", {})
+    config_path = os.environ.get("JULESOPS_CONFIG_PATH") or DEFAULT_CONFIG_PATH
+    if os.path.exists(config_path):
+        cfg = parse_simple_yaml(config_path).get("julesops", {})
+    else:
+        # A config file is optional: every field has a default.
+        print(f"No config file at {config_path}; using JulesOps defaults.", file=sys.stderr)
+        cfg = {}
 
     values = {
         "enabled": as_bool_text(nested(cfg, ["enabled"], True), True),
         "base_branch": nested(cfg, ["repository", "base_branch"], "main"),
         "queue_label": nested(cfg, ["queue", "queue_label"], "jules-queue"),
+        "blocked_holds_queue": as_bool_text(nested(cfg, ["queue", "blocked_holds_queue"], False), False),
+        "max_attempts": str(nested(cfg, ["queue", "max_attempts"], 3)),
         "status_todo": nested(cfg, ["states", "todo"], "status:todo"),
         "status_in_progress": nested(cfg, ["states", "in_progress"], "status:in-progress"),
         "status_review": nested(cfg, ["states", "review"], "status:review"),
@@ -112,11 +118,20 @@ def main():
         "repo_instructions": nested(cfg, ["instructions", "repo"], ".github/jules-repo.md"),
         "target_base_branch_only": as_bool_text(nested(cfg, ["pull_request", "target_base_branch_only"], False), False),
         "require_issue_link": as_bool_text(nested(cfg, ["pull_request", "require_issue_link"], False), False),
+        "jules_authors": nested(cfg, ["pull_request", "jules_authors"], DEFAULT_JULES_AUTHORS),
         "close_on_merge": as_bool_text(nested(cfg, ["issue_completion", "close_on_merge"], True), True),
         "blocked_marker": nested(cfg, ["blocked_comment", "marker"], "## Blocked"),
         "stale_in_progress_hours": str(nested(cfg, ["watchdog", "stale_in_progress_hours"], 24)),
         "stale_review_hours": str(nested(cfg, ["watchdog", "stale_review_hours"], 72)),
+        "fail_in_progress_hours": str(nested(cfg, ["watchdog", "fail_in_progress_hours"], 72)),
     }
+
+    # With JULESOPS_EXPORT_ENV=true, also expose every value to later steps as JULESOPS_<KEY>.
+    github_env = os.environ.get("GITHUB_ENV")
+    if github_env and os.environ.get("JULESOPS_EXPORT_ENV") == "true":
+        with open(github_env, "a", encoding="utf-8") as env_file:
+            for key, value in values.items():
+                env_file.write(f"JULESOPS_{key.upper()}={value}\n")
 
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:

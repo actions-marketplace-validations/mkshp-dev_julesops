@@ -4,12 +4,12 @@ Security is a core priority for JulesOps. This document outlines how secrets, wo
 
 ## Supported Versions
 
-Only the latest public beta release of JulesOps is supported for security updates:
+Only the latest release of JulesOps is supported for security updates:
 
 | Version | Supported |
 | --- | --- |
-| v0.3.x | Yes |
-| < v0.3 | No |
+| v0.6.x | Yes |
+| < v0.6 | No |
 
 ---
 

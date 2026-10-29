@@ -7,6 +7,8 @@ julesops:
   queue:
     queue_label: jules-queue
     max_active_jobs: 1    # experimental: not yet fully honored (single-job enforcement only)
+    blocked_holds_queue: false    # true: a blocked issue stops dispatch until a maintainer acts
+    max_attempts: 3    # /jules retry needs --force after this many dispatches; 0 = no limit
 
   states:
     todo: status:todo
@@ -26,6 +28,7 @@ julesops:
   pull_request:
     target_base_branch_only: true
     require_issue_link: true
+    jules_authors: google-labs-jules[bot]    # comma-separated logins Jules commits and comments as
 
   issue_completion:
     close_on_merge: true
@@ -33,3 +36,4 @@ julesops:
   watchdog:
     stale_in_progress_hours: 24
     stale_review_hours: 72
+    fail_in_progress_hours: 72    # mark in-progress issues failed after this long; 0 = never

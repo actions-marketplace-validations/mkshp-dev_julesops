@@ -13,9 +13,9 @@ const { handleAdminRequest } = require('./admin');
 const { requireRole, getAccessibleInstallationIds } = require('./rbac');
 const { sessionMiddleware } = require('./session');
 const { handleOAuthStart, handleOAuthCallback, handleLogout } = require('./oauth');
-const { handleCheckout, handleStripeWebhook, handleBillingPortal } = require('./billing');
 const { startAlertWorker } = require('./alerts');
 const { recordWebhookProcessing, renderMetricsText } = require('./metrics');
+const { readBody, WEBHOOK_BODY_LIMIT } = require('./http-body');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -28,7 +28,9 @@ let webhookFailedTotal = 0;
 const DASHBOARD_DIR = path.join(__dirname, '..', '..', 'dashboard');
 const DASHBOARD_HTML_PATH = path.join(DASHBOARD_DIR, 'index.html');
 const DASHBOARD_CSS_PATH = path.join(DASHBOARD_DIR, 'style.css');
-const AUTH_REQUIRED = process.env.NODE_ENV === 'production';
+// Hosted data (Postgres) always requires login. Only the local JSON demo mode outside
+// production runs without it.
+const AUTH_REQUIRED = process.env.NODE_ENV === 'production' || Boolean(process.env.DATABASE_URL);
 
 function readAsset(assetPath) {
   return fs.readFileSync(assetPath, 'utf8');
@@ -51,36 +53,24 @@ function requireHostedSession(req, res) {
 
 async function getAccessibleInstallationsForRequest(req) {
   if (!AUTH_REQUIRED) return null;
-  if (!req.session) return [];
-  return getAccessibleInstallationIds(String(req.session.githubId), 'viewer') || [];
-}
-
-async function requireBillingAdmin(req, res, installationId) {
-  if (!AUTH_REQUIRED) return true;
-  if (!req.session) {
-    sendJson(res, 401, { ok: false, error: 'authentication required' });
-    return false;
-  }
-  if (!installationId) {
-    const installations = await getAccessibleInstallationIds(String(req.session.githubId), 'admin');
-    if (!installations || installations.length === 0) {
-      sendJson(res, 403, { ok: false, error: 'insufficient permissions (required: admin)' });
-      return false;
-    }
-    return true;
-  }
-  req.installationId = installationId;
-  return requireRole('admin')(req, res);
+  if (!req.session || !req.session.userId) return [];
+  return getAccessibleInstallationIds(req.session.userId, 'viewer') || [];
 }
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
+
+// Cross-origin access is off unless CORS_ORIGIN names the allowed origin. The dashboard
+// is served from this server, so it never needs it.
+function corsHeaders() {
+  return process.env.CORS_ORIGIN ? { 'access-control-allow-origin': process.env.CORS_ORIGIN } : {};
+}
 
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload, null, 2);
   res.writeHead(statusCode, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
-    'access-control-allow-origin': process.env.CORS_ORIGIN || '*',
+    ...corsHeaders(),
   });
   res.end(body);
 }
@@ -88,15 +78,6 @@ function sendJson(res, statusCode, payload) {
 function sendText(res, statusCode, body, contentType = 'text/plain; charset=utf-8') {
   res.writeHead(statusCode, { 'content-type': contentType, 'cache-control': 'no-store' });
   res.end(body);
-}
-
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on('data', (chunk) => chunks.push(chunk));
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
-  });
 }
 
 // ─── Webhook signature verification ──────────────────────────────────────────
@@ -110,6 +91,10 @@ function timingSafeEqualHex(left, right) {
 
 function verifyGitHubSignature(rawBody, signatureHeader) {
   if (!WEBHOOK_SECRET) {
+    // Never accept unsigned webhooks in production; local demo mode may skip verification.
+    if (process.env.NODE_ENV === 'production') {
+      return { ok: false, status: 503, reason: 'webhook verification is not configured (GITHUB_WEBHOOK_SECRET)' };
+    }
     return { ok: true, mode: 'disabled' };
   }
   if (!signatureHeader || !signatureHeader.startsWith('sha256=')) {
@@ -130,12 +115,12 @@ async function handleWebhook(req, res) {
   let ok = false;
 
   try {
-    const rawBody = await readBody(req);
+    const rawBody = await readBody(req, WEBHOOK_BODY_LIMIT);
     const verification = verifyGitHubSignature(rawBody, req.headers['x-hub-signature-256']);
 
     if (!verification.ok) {
       webhookFailedTotal += 1;
-      sendJson(res, 401, { ok: false, error: verification.reason });
+      sendJson(res, verification.status || 401, { ok: false, error: verification.reason });
       return;
     }
 
@@ -218,7 +203,7 @@ async function handleRequest(req, res) {
   // CORS preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
-      'access-control-allow-origin': process.env.CORS_ORIGIN || '*',
+      ...corsHeaders(),
       'access-control-allow-methods': 'GET, POST, OPTIONS',
       'access-control-allow-headers': 'content-type, x-hub-signature-256, x-github-event, x-github-delivery',
     });
@@ -332,17 +317,6 @@ async function handleRequest(req, res) {
         alert_rules: rules.length,
         notification_destinations: destinations.length,
         alert_deliveries: deliveries.length,
-      });
-      return;
-    }
-
-    if (req.method === 'GET' && pathname === '/health/stripe') {
-      sendJson(res, 200, {
-        ok: true,
-        mode: process.env.STRIPE_SECRET_KEY ? 'configured' : 'not-configured',
-        note: process.env.STRIPE_SECRET_KEY
-          ? 'Stripe credentials present.'
-          : 'Stripe billing not yet active — set STRIPE_SECRET_KEY.',
       });
       return;
     }
@@ -531,36 +505,15 @@ async function handleRequest(req, res) {
       return;
     }
 
-    // ── Billing routes ────────────────────────────────────────────────
-
-    if (req.method === 'POST' && pathname === '/billing/checkout') {
-      if (!requireHostedSession(req, res)) return;
-      const rawBody = await readBody(req);
-      let parsedBody = {};
-      try { parsedBody = rawBody.length ? JSON.parse(rawBody.toString('utf8')) : {}; } catch {}
-      const installationId = Number(parsedBody.installation_id || 0);
-      if (AUTH_REQUIRED && !(await requireBillingAdmin(req, res, installationId))) return;
-      await handleCheckout(req, res, rawBody);
-      return;
-    }
-
-    if (req.method === 'POST' && pathname === '/billing/webhook') {
-      const rawBody = await readBody(req);
-      await handleStripeWebhook(req, res, rawBody);
-      return;
-    }
-
-    if (req.method === 'GET' && pathname === '/billing/portal') {
-      if (!requireHostedSession(req, res)) return;
-      if (AUTH_REQUIRED && !(await requireBillingAdmin(req, res, null))) return;
-      await handleBillingPortal(req, res);
-      return;
-    }
-
     sendJson(res, 404, { ok: false, error: 'not found' });
   } catch (error) {
+    if (error.statusCode === 413) {
+      sendJson(res, 413, { ok: false, error: error.message });
+      return;
+    }
+    // Log the details; don't send internal error messages to clients.
     console.error('[server] Unhandled error:', error);
-    sendJson(res, 500, { ok: false, error: error.message });
+    sendJson(res, 500, { ok: false, error: 'internal server error' });
   }
 }
 
@@ -573,6 +526,14 @@ function createServer() {
 }
 
 if (require.main === module) {
+  if (!WEBHOOK_SECRET) {
+    console.warn(process.env.NODE_ENV === 'production'
+      ? '[server] GITHUB_WEBHOOK_SECRET is not set: GitHub webhooks will be rejected.'
+      : '[server] GITHUB_WEBHOOK_SECRET is not set: accepting unsigned webhooks (demo mode only).');
+  }
+  if (!AUTH_REQUIRED) {
+    console.warn('[server] Running without login (JSON demo mode). Do not expose this server publicly.');
+  }
   if (process.env.ALERT_WORKER_ENABLED !== 'false') {
     startAlertWorker();
   }

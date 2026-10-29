@@ -85,6 +85,10 @@ When `Jules State Sync` sees that marker on an in-progress issue, it should move
 in_progress → blocked
 ```
 
+The marker is only honored when the comment author is a bot account (Jules), a login listed in
+`pull_request.jules_authors`, or a maintainer (`OWNER`, `MEMBER`, `COLLABORATOR`). Markers posted by
+anyone else are ignored so that outside commenters cannot stall the queue.
+
 ## PR closed without merge
 If Jules opens a PR but it is closed without merge, the issue should move to:
 
@@ -122,9 +126,19 @@ The first-pass workflow kit is designed around a **single active issue by defaul
 Operationally, an issue in one of these states counts as active for queue-blocking purposes:
 - `in_progress`
 - `review`
-- `blocked`
+- `blocked`, only with `queue.blocked_holds_queue: true` (by default a blocked issue waits for a maintainer while the queue moves on)
+
+An issue cannot hold the queue forever: the watchdog moves an issue that has been `in_progress` for `watchdog.fail_in_progress_hours` (default 72) to `failed`.
 
 That means the dispatcher should not select another queued issue while an active one exists, unless the workflow kit is later generalized to support multiple concurrent jobs.
+
+---
+
+# 5b. Issues without a status label
+
+An open issue with the queue label but **no status label at all** counts as `todo`. This lets you
+queue work by adding a single label (`jules-queue`). An issue with any other status label
+(for example `failed` or `done`) is not picked up until it is moved back to `todo`.
 
 ---
 
@@ -165,6 +179,8 @@ When the command is received, the `Jules State Sync` workflow:
 1. Verifies that the commenter is an authorized maintainer (role `OWNER`, `MEMBER`, or `COLLABORATOR`).
 2. Cleans up existing status labels (e.g. `status:blocked`, `status:failed`, etc.) and adds the `status:todo` label.
 3. Automatically triggers `Jules Dispatch` immediately to execute the issue.
+
+An issue that has already been dispatched `queue.max_attempts` times (default 3) is not requeued; JulesOps comments asking the maintainer to clarify the issue first. `/jules retry --force` (or `/jules requeue --force`) goes past the limit.
 
 ## Label-driven transition (Manual)
 A maintainer can manually move an issue back to the queue by removing the `status:blocked` or `status:failed` label and adding the `status:todo` label.

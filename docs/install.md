@@ -1,6 +1,13 @@
 # Install JulesOps in a repository
 
-This guide describes how to install the **JulesOps workflow kit** into a repository that wants to use Google Jules as a controlled implementation agent.
+This guide describes how to set up JulesOps in a repository that wants to use Google Jules as a controlled implementation agent.
+
+There are two ways:
+
+- **The action only** (quickest): add one workflow file that uses `mkshp-dev/julesops`, plus a `JULES_API_KEY` secret. No config file is needed. Copy [`examples/julesops-workflow.yml`](../examples/julesops-workflow.yml) to `.github/workflows/julesops.yml`; the README's Quick Start walks through it.
+- **The kit** (more control): the installer below adds separate dispatch, sync, and watchdog workflows (each calling the same action), an editable `.github/julesops.yml`, a **Jules Task** issue template, and instruction files for Jules.
+
+The rest of this guide covers the kit.
 
 JulesOps v1 is GitHub-native:
 
@@ -32,38 +39,20 @@ A JulesOps-managed repository contains:
 
 # 2. Install with the script
 
+Requirements: `bash` 3.2+ (Linux, macOS, or WSL on Windows), `git` 2.28+, `python3` 3.8+. The GitHub CLI (`gh`) is optional and only used to create labels and check secrets.
+
 From the JulesOps repository:
 
-**Windows (PowerShell 5.1+)**
-
-```powershell
-.\scripts\install-julesops.ps1 -TargetRepo "C:\path\to\target-repo" -BaseBranch main
+```bash
+scripts/install-julesops.sh /path/to/target-repo --base-branch main
 ```
 
-**macOS / Linux (PowerShell Core 7+)**
-
-Install PowerShell Core if not already available:
+Useful options (run `scripts/install-julesops.sh --help` for the full list):
 
 ```bash
-# macOS
-brew install --cask powershell
-
-# Ubuntu/Debian
-sudo apt-get install -y powershell
-```
-
-Then run:
-
-```bash
-pwsh ./scripts/install-julesops.ps1 -TargetRepo "/path/to/target-repo" -BaseBranch main
-```
-
-Useful options (all platforms):
-
-```powershell
-.\scripts\install-julesops.ps1 -TargetRepo "C:\path\to\target-repo" -BaseBranch Dev -QueueLabel jules-queue
-.\scripts\install-julesops.ps1 -TargetRepo "C:\path\to\target-repo" -Force
-.\scripts\install-julesops.ps1 -TargetRepo "C:\path\to\target-repo" -Upgrade
+scripts/install-julesops.sh /path/to/target-repo --base-branch Dev --queue-label jules-queue
+scripts/install-julesops.sh /path/to/target-repo --force
+scripts/install-julesops.sh /path/to/target-repo --upgrade
 ```
 
 The installer copies the canonical files from `templates/` and `workflows/`, creates `.github/jules-repo.md` if missing, and customizes the base branch / queue label in `.github/julesops.yml`.
@@ -76,14 +65,14 @@ If a prior JulesOps install is detected, the installer will prompt you to upgrad
 
 Validate the JulesOps source kit:
 
-```powershell
-.\scripts\validate-kit.ps1
+```bash
+scripts/validate-kit.sh
 ```
 
 Validate an installed target repository:
 
-```powershell
-.\scripts\validate-kit.ps1 -TargetRepo "C:\path\to\target-repo"
+```bash
+scripts/validate-kit.sh /path/to/target-repo
 ```
 
 The validator checks that the canonical kit files exist, key workflow expectations are present, and an installed target repo has the required `.github` files.
@@ -105,6 +94,8 @@ From `workflows/`:
 - `workflows/jules-dispatch.yml` → `.github/workflows/jules-dispatch.yml`
 - `workflows/jules-state-sync.yml` → `.github/workflows/jules-state-sync.yml`
 - `workflows/jules-watchdog.yml` → `.github/workflows/jules-watchdog.yml`
+
+The workflows call `mkshp-dev/julesops` pinned to a release (for example `@v0.6.0`); keep that version when copying.
 
 Then create `.github/jules-repo.md` in the adopting repo.
 
@@ -163,19 +154,19 @@ See `docs/repo-config-spec.md` for the config contract.
 
 # 6. Create the required labels
 
-Label creation runs **automatically at the end of `install-julesops.ps1`**. If the GitHub CLI (`gh`) is authenticated and a GitHub remote is detected, the 7 JulesOps labels are created on GitHub in the same step. If not, the script prints a manual checklist instead of failing.
+Label creation runs **automatically at the end of `install-julesops.sh`**. If the GitHub CLI (`gh`) is authenticated and a GitHub remote is detected, the 7 JulesOps labels are created on GitHub in the same step. If not, the script prints a manual checklist instead of failing.
 
 To skip label creation during install:
 
-```powershell
-.\scripts\install-julesops.ps1 -TargetRepo "C:\path\to\target-repo" -BaseBranch main -SkipLabels
+```bash
+scripts/install-julesops.sh /path/to/target-repo --base-branch main --skip-labels
 ```
 
 To bootstrap labels separately at any time:
 
-```powershell
-.\scripts\bootstrap-labels.ps1 -TargetRepo "C:\path\to\target-repo"
-.\scripts\bootstrap-labels.ps1 -TargetRepo "C:\path\to\target-repo" -DryRun
+```bash
+scripts/bootstrap-labels.sh /path/to/target-repo
+scripts/bootstrap-labels.sh /path/to/target-repo --dry-run
 ```
 
 The required labels are:
@@ -262,4 +253,4 @@ For a full troubleshooting reference, see [`docs/troubleshooting.md`](troublesho
 - Dispatch fails → check `JULES_API_KEY` secret is set and `.github/julesops.yml` is valid.
 - Issue stuck in review after merge → ensure PR body contains `Closes #N` / `Fixes #N` / `Resolves #N`.
 - Watchdog too noisy → increase `stale_in_progress_hours` / `stale_review_hours` in config.
-- Labels missing → run `bootstrap-labels.ps1 -TargetRepo` to create them.
+- Labels missing → run `scripts/bootstrap-labels.sh /path/to/target-repo` to create them.

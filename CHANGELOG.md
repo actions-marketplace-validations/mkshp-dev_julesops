@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `server/` is marked experimental and parked, with its known issues listed in `server/README.md`. It isn't part of releases and isn't needed by the action.
+
+## [0.6.0] - 2026-09-26
+
+### Changed
+- **A blocked issue no longer stops the queue.** Only `in-progress` and `review` issues hold it; a blocked issue waits for a maintainer while the next queued issue is dispatched. Set `queue.blocked_holds_queue: true` for the previous behavior.
+- **JulesOps is free, with no paid tier.** Optional donations go through GitHub Sponsors (`.github/FUNDING.yml`). The server in `server/` is now an optional self-hostable backend; `PRIVACY.md` and `TERMS.md` no longer describe a commercial hosted service.
+- Server tests run against a temporary store; `server/data/store.json` is no longer tracked. CI runs the server unit tests, and Dependabot checks action and npm updates weekly.
+
+### Added
+- `watchdog.fail_in_progress_hours` (default 72): the watchdog marks an issue failed once it has been in-progress that long, with a comment explaining how to retry, so a stuck task can't hold the queue forever. Measured from when the in-progress label was applied, not `updatedAt`, which every comment (including the watchdog's own reminders) resets. `0` disables it.
+- `queue.max_attempts` (default 3): `/jules retry` refuses to requeue an issue that has already been dispatched that many times and asks the maintainer to clarify it first; `/jules retry --force` goes past the limit. `0` means no limit.
+
+### Removed
+- Stripe billing from the server: the `/billing/*` routes, `GET /health/stripe`, and the `STRIPE_*` variables. Migration `006_drop_billing.sql` drops the `subscriptions` table and `installation_plans` view.
+- Internal planning and development documents from `docs/` (architecture, product scope, beta and E2E reports, Marketplace listing, release checklist, support runbook, deployment and monitoring guides). Server deployment steps are now in `server/README.md`.
+
+### Security
+- The GitHub webhook endpoint no longer skips signature checks in production when its secret is unset; it rejects with 503 instead. Local demo mode still accepts unsigned webhooks, with a startup warning.
+- Login after OAuth only redirects to paths on the same site; `redirect_to` could previously send a freshly logged-in user to any URL.
+- Request bodies are capped (25 MB for webhooks, matching GitHub's payload limit; 1 MB otherwise) and answered with 413, instead of being buffered without limit.
+- API errors no longer return internal error messages to clients.
+- CORS is off unless `CORS_ORIGIN` is set (was `*`).
+- Login is required whenever `DATABASE_URL` is set, not only when `NODE_ENV=production`.
+- The dashboard escapes every value it renders (repository names, statuses, numbers, dates, error messages); values containing HTML could previously inject markup.
+
+### Fixed
+- Server RBAC looked up memberships by GitHub id, but memberships reference `users.id` (a UUID), so every permission check would fail against Postgres. Sessions now carry `userId`.
+- Email alerts reported "HTTP undefined" instead of the real error when SendGrid was unreachable.
+- The alert worker read `server/data/store.json` directly, ignoring `JULESOPS_DATA_DIR`.
+- The dispatch run summary said a blocked issue holds the queue even when `queue.blocked_holds_queue` is off.
+
+## [0.5.0] - 2026-09-25
+
+### Added
+- **The Marketplace action now works.** `uses: mkshp-dev/julesops@v0.5.0` runs JulesOps directly: `mode` selects `dispatch`, `sync`, `watchdog`, or `auto` (picked from the triggering event). A single workflow file and a `JULES_API_KEY` secret are enough; see `examples/julesops-workflow.yml`. Previously `action.yml` only printed an install banner.
+- The config file is optional; every setting has a default.
+- Missing JulesOps labels are created on the first run.
+- An open issue with the queue label and no status label counts as queued, so `jules-queue` alone queues work.
+- The core Jules instructions ship with the action and are used when the repository has no `.github/jules-core.md`.
+- `dry-run` input that logs every change instead of making it; CI runs the real action this way.
+- `scripts/test-action.sh`: tests for the action scripts against a stubbed `gh` CLI.
+
+### Changed
+- The kit's workflows are thin wrappers that call the action, pinned to the kit version. The installer no longer copies `.github/resolve-config.py` or `.github/jules-comment-command.js`; `--upgrade` and the uninstaller remove copies left by older installs.
+- Status changes replace the issue's status label in a single API call instead of several remove/add calls.
+- The watchdog and dispatch no longer stop at the first 30 issues, pull requests, or comments.
+- A failed dispatch comment links the run log and mentions `/jules retry`.
+- Workflows and examples use `actions/checkout@v5` (Node 24); v4 runs on the deprecated Node 20 runtime.
+
+### Fixed
+- `/jules retry` and `/jules requeue` failed in installed repositories because `jules-state-sync.yml` ran `scripts/comment-command.js`, which the installer never copied. The parser now ships as `.github/jules-comment-command.js`, and `validate-kit.sh` checks that every script a workflow executes is installed.
+- `require_issue_link` posted a validation warning on every human-authored pull request. It now applies only to pull requests created by Jules: a commit authored by a `pull_request.jules_authors` login (default `google-labs-jules[bot]`) or a Jules task link in the body. The PR author is not used, because Jules opens PRs under the account of the user who started the task.
+- Any commenter could move an in-progress issue to `blocked` by posting the blocked marker. The marker is now honored only from bot accounts, `jules_authors`, or maintainers.
+- Overlapping `Jules Dispatch` runs could invoke Jules twice for the same issue. Dispatch now uses a `concurrency` group and claims the issue (`status:in-progress`) before invoking Jules.
+- Watchdog review-transition comments rendered a stray backslash (`` \`status:review\` ``).
+- `--upgrade` on a repository without an existing `julesops.yml` now applies `--base-branch` / `--queue-label` to the newly written config.
+
+### Changed
+- **Breaking (kit tooling):** all kit scripts are now bash instead of PowerShell (`install-julesops.sh`, `uninstall-julesops.sh`, `bootstrap-labels.sh`, `validate-kit.sh`, `release-kit.sh`, `test-fixture.sh`, `test-workflow-logic.sh`). They need `bash` 3.2+, `git` 2.28+, and `python3`, and run on Linux, macOS, and WSL. Flags are now GNU-style (`--upgrade`, `--force`, `--dry-run`, `--skip-labels`, `--base-branch`, `--queue-label`, `--include-config`) and the target repository is a positional argument.
+- Kit scripts read `julesops.yml` with the same parser as the installed `resolve-config.py` (via `scripts/lib/config_dump.py`), replacing the separate PowerShell YAML reader.
+- Installed files are written with LF line endings (the PowerShell installer wrote CRLF version markers).
+- `release-kit.sh` moves the `## [Unreleased]` entries under the new version heading; the PowerShell version inserted the new section above `## [Unreleased]`.
+- CI runs on `ubuntu-latest` and lints the kit scripts with `shellcheck`.
+
+### Added
+- `pull_request.jules_authors` config field.
+
+### Documentation
+- `README.md` no longer advertises a non-functional `uses: mkshp-dev/julesops@v1` step; Quick Start now describes the installer flow and the installed file layout.
+- `docs/install.md` manual install now lists `resolve-config.py` and `jules-comment-command.js`.
+
 ## [0.4.0] - 2026-07-15
 
 ### Documentation
